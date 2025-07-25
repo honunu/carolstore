@@ -5,23 +5,31 @@
 #include <freertos/queue.h>
 
 // 硬件配置
-#define SERVO_PIN 7       // 舵机信号线连接的GPIO
-#define LED_PIN 5         // WS2812数据线连接的GPIO
+#define ROOF_SERVO_PIN 7      // 舵机1信号线
+#define LEFT_SERVO_PIN 4      // 舵机2信号线
+#define RIGHT_SERVO_PIN 6      // 舵机3信号线
+#define LED_PIN 5         // WS2812数据线
 #define LED_COUNT 8       // LED数量
 
 // 舵机参数
 #define SERVO_MIN_ANGLE 0
 #define SERVO_MAX_ANGLE 270
 #define SERVO_INITIAL_ANGLE 120
-#define SERVO_MOVE_SPEED 100  // 增加延迟时间
+#define SERVO_MOVE_SPEED 50  // 毫秒/度
+
+// 舵机参数
+#define DOOR_SERVO_MIN_ANGLE 0
+#define DOOR_SERVO_MAX_ANGLE 180
+#define LEFT_DOOR_SERVO_INITIAL_ANGLE 20
+#define RIGHT_DOOR_SERVO_INITIAL_ANGLE 140
 
 // LED参数
 #define LED_BRIGHTNESS 200
 
-// 创建舵机对象
-Servo myServo;
+// 舵机对象数组
+Servo servos[3];
 CRGB leds[LED_COUNT];
-// 创建LED条对象
+// LED颜色定义
 const CRGB WARM_WHITE = CRGB(255, 180, 130);
 const CRGB COOL_WHITE = CRGB(220, 255, 255);
 
@@ -40,33 +48,48 @@ enum LedMode {
   COLD_LIGHT
 };
 
-// 舵机控制任务
+// 舵机数据结构
+struct ServoCommand {
+  uint8_t servo_id;  // 舵机ID (0,1,2)
+  int angle;         // 目标角度
+};
+
+// 舵机控制任务 - 控制所有舵机
 void servoTask(void *pvParameters) {
-  int targetAngle = SERVO_INITIAL_ANGLE;
-  int currentAngle = SERVO_INITIAL_ANGLE;
-  
   Serial.println("舵机任务启动");
+  
+  // 舵机当前位置
+  int currentAngles[3] = {SERVO_INITIAL_ANGLE, LEFT_DOOR_SERVO_INITIAL_ANGLE, RIGHT_DOOR_SERVO_INITIAL_ANGLE};
+  
+  // 舵机目标位置
+  int targetAngles[3] = {SERVO_INITIAL_ANGLE, SERVO_INITIAL_ANGLE, SERVO_INITIAL_ANGLE};
   
   // 获取初始堆栈高水位线
   UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
   Serial.printf("舵机任务初始堆栈高水位线: %d\n", uxHighWaterMark);
   
   while (1) {
-    // 检查是否有新的目标角度
-    if (xQueueReceive(servoAngleQueue, &targetAngle, 0) == pdPASS) {
-      // 确保目标角度在有效范围内
-      targetAngle = constrain(targetAngle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
-      Serial.printf("新舵机角度: %d度\n", targetAngle);
+    // 检查是否有新的舵机命令
+    ServoCommand cmdReceived;
+    if (xQueueReceive(servoAngleQueue, &cmdReceived, 0) == pdPASS) {
+      if (cmdReceived.servo_id < 3) {
+        // 确保目标角度在有效范围内
+        Serial.printf("接收到的角度是 %d", cmdReceived.angle);
+        targetAngles[cmdReceived.servo_id] = constrain(cmdReceived.angle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+        Serial.printf("舵机%d新角度: %d度\n", cmdReceived.servo_id, targetAngles[cmdReceived.servo_id]);
+      }
     }
     
-    // 只有需要移动时才更新舵机
-    if (currentAngle != targetAngle) {
-      if (currentAngle < targetAngle) {
-        currentAngle++;
-      } else {
-        currentAngle--;
+    // 更新所有舵机位置
+    for (int i = 0; i < 3; i++) {
+      if (currentAngles[i] != targetAngles[i]) {
+        if (currentAngles[i] < targetAngles[i]) {
+          currentAngles[i]++;
+        } else {
+          currentAngles[i]--;
+        }
+        servos[i].write(currentAngles[i]);
       }
-      myServo.write(currentAngle);
     }
     
     // 非阻塞延迟
@@ -161,7 +184,7 @@ void setup() {
   // 初始化串口通信
   Serial.begin(115200);
   delay(1000); // 等待串口稳定
-  Serial.println("\n\n系统启动中...");
+  Serial.println("\n\n多舵机控制系统启动中...");
   
   // 打印重启原因
   print_reset_reason();
@@ -173,19 +196,20 @@ void setup() {
   Serial.printf("可用堆内存: %d bytes\n", ESP.getHeapSize());
   Serial.printf("最小可用堆内存: %d bytes\n", ESP.getMinFreeHeap());
   
-  // 初始化舵机 - 只在这里附加一次
-  Serial.println("附加舵机到引脚7");
-  if (myServo.attach(SERVO_PIN, 500, 2500) == -1) {
-    Serial.println("舵机附加失败! 系统挂起");
-    while(1) delay(1000);
+  // 初始化所有舵机
+  const uint8_t servoPins[3] = {ROOF_SERVO_PIN, LEFT_SERVO_PIN, RIGHT_SERVO_PIN};
+  for (int i = 0; i < 3; i++) {
+    Serial.printf("附加舵机%d到引脚%d\n", i+1, servoPins[i]);
+    if (servos[i].attach(servoPins[i], 500, 2500) == -1) {
+      Serial.printf("舵机%d附加失败! 系统挂起\n", i+1);
+      while(1) delay(1000);
+    }
+    servos[i].write(SERVO_INITIAL_ANGLE);
+    Serial.printf("舵机%d初始位置: %d度\n", i+1, SERVO_INITIAL_ANGLE);
   }
   
-  // 初始位置设为中间角度
-  myServo.write(SERVO_INITIAL_ANGLE);
-  Serial.printf("舵机初始位置: %d度\n", SERVO_INITIAL_ANGLE);
-  
   // 创建消息队列 - 使用适当大小
-  servoAngleQueue = xQueueCreate(3, sizeof(int));
+  servoAngleQueue = xQueueCreate(3, sizeof(ServoCommand));
   ledModeQueue = xQueueCreate(3, sizeof(LedMode));
   
   // 检查队列是否创建成功
@@ -246,8 +270,13 @@ void setup() {
   }
   
   Serial.println("系统初始化完成");
-  Serial.println("可用命令: S<角度>, L0, L1, L2");
-  Serial.println("例如: S90, L1");
+  Serial.println("可用命令: ");
+  Serial.println("  S<舵机ID><角度> - 设置舵机角度 (如 S0120)");
+  Serial.println("  L0 - 关闭LED");
+  Serial.println("  L1 - 暖光模式");
+  Serial.println("  L2 - 冷光模式");
+  Serial.println("  mem - 查看内存使用");
+  Serial.println("  reset - 重启系统");
   
   // 禁用看门狗 (ESP32-S2特定)
   disableCore0WDT();
@@ -260,37 +289,51 @@ void loop() {
     String input = Serial.readStringUntil('\n');
     input.trim();
     
-    if (input.startsWith("S")) {
-      // 舵机角度命令
-      int angle = input.substring(1).toInt();
-      if (angle >= SERVO_MIN_ANGLE && angle <= SERVO_MAX_ANGLE) {
-        if (xQueueSend(servoAngleQueue, &angle, pdMS_TO_TICKS(100)) != pdPASS) {
+    // 舵机控制命令: S<舵机ID><角度>
+    if (input.startsWith("S") && input.length() >= 2) {
+      uint8_t servoId = input.charAt(1) - '0'; // 转换为数字
+      int angle = input.substring(2).toInt();
+      
+      if (servoId >= 0 && servoId <= 2 && 
+          angle >= SERVO_MIN_ANGLE && angle <= SERVO_MAX_ANGLE) {
+        
+        ServoCommand cmd;
+        cmd.servo_id = servoId;
+        cmd.angle = angle;
+        
+        if (xQueueSend(servoAngleQueue, &cmd, pdMS_TO_TICKS(100)) != pdPASS) {
           Serial.println("错误: 舵机命令队列已满!");
         } else {
-          Serial.print("设置舵机角度为: ");
-          Serial.println(angle);
+          Serial.printf("设置舵机%d角度为: %d\n", servoId, angle);
         }
       } else {
-        Serial.println("错误: 角度必须在0-270之间");
+        Serial.println("错误: 无效的舵机命令格式");
+        Serial.println("格式: S<舵机ID><角度>");
+        Serial.println("舵机ID: 0,1,2");
+        Serial.println("角度范围: 0-270");
       }
     } 
+    // LED模式命令
     else if (input.startsWith("L")) {
-      // LED模式命令
-      int mode = input.substring(1).toInt();
-      if (mode >= 0 && mode <= 2) {
-        LedMode ledMode = static_cast<LedMode>(mode);
-        if (xQueueSend(ledModeQueue, &ledMode, pdMS_TO_TICKS(100)) != pdPASS) {
-          Serial.println("错误: LED命令队列已满!");
-        } else {
-          Serial.print("设置LED模式为: ");
-          switch(ledMode) {
-            case LED_OFF: Serial.println("关闭"); break;
-            case WARM_LIGHT: Serial.println("暖光"); break;
-            case COLD_LIGHT: Serial.println("冷光"); break;
+      if (input.length() >= 2) {
+        int mode = input.charAt(1) - '0';
+        if (mode >= 0 && mode <= 2) {
+          LedMode ledMode = static_cast<LedMode>(mode);
+          if (xQueueSend(ledModeQueue, &ledMode, pdMS_TO_TICKS(100)) != pdPASS) {
+            Serial.println("错误: LED命令队列已满!");
+          } else {
+            Serial.print("设置LED模式为: ");
+            switch(ledMode) {
+              case LED_OFF: Serial.println("关闭"); break;
+              case WARM_LIGHT: Serial.println("暖光"); break;
+              case COLD_LIGHT: Serial.println("冷光"); break;
+            }
           }
+        } else {
+          Serial.println("错误: LED模式必须是0-2");
         }
       } else {
-        Serial.println("错误: LED模式必须是0-2");
+        Serial.println("错误: 无效的LED命令格式");
       }
     }
     else if (input.equalsIgnoreCase("mem")) {
@@ -312,19 +355,18 @@ void loop() {
     else if (input.equalsIgnoreCase("reset")) {
       ESP.restart();
     }
-    else if (input.equalsIgnoreCase("reason")) {
-      print_reset_reason();
-    }
-    else if (input.equalsIgnoreCase("info")) {
-      Serial.printf("芯片型号: %s\n", ESP.getChipModel());
-      Serial.printf("CPU频率: %d MHz\n", ESP.getCpuFreqMHz());
-      Serial.printf("闪存大小: %d KB\n", ESP.getFlashChipSize() / 1024);
-      Serial.printf("可用堆内存: %d bytes\n", ESP.getHeapSize());
+    else if (input.equalsIgnoreCase("status")) {
+      Serial.println("系统状态报告:");
+      Serial.printf("  Free Heap: %d bytes\n", ESP.getFreeHeap());
+      Serial.printf("  Min Free Heap: %d bytes\n", ESP.getMinFreeHeap());
+      Serial.printf("  舵机任务状态: %d\n", eTaskGetState(servoTaskHandle));
+      Serial.printf("  LED任务状态: %d\n", eTaskGetState(ledTaskHandle));
     }
     else {
       Serial.println("未知命令");
-      Serial.println("可用命令: S<角度>, L0, L1, L2, mem, reset, reason, info");
-      Serial.println("例如: S90, L1");
+      Serial.println("可用命令: S<舵机ID><角度>, L<模式>, mem, reset, status");
+      Serial.println("例如: S0120 (设置舵机0到120度)");
+      Serial.println("      L1 (设置LED为暖光模式)");
     }
   }
   
