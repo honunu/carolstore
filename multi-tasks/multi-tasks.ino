@@ -44,18 +44,118 @@ QueueHandle_t servoAngleQueue;
 QueueHandle_t ledModeQueue;
 
 // LED模式枚举
-enum LedMode {
+// enum LedMode {
+//   LED_OFF,
+//   WARM_LIGHT,
+//   COLD_LIGHT
+// };
+
+typedef enum {
   LED_OFF,
   WARM_LIGHT,
-  COLD_LIGHT
-};
+  COLD_LIGHT,
+  BREATHING   // 新增呼吸模式
+} LedMode;
 
 // 舵机数据结构
 struct ServoCommand {
   uint8_t servo_id;  // 舵机ID (0,1,2)
   int angle;         // 目标角度
 };
+struct LedCommand {
+  LedMode mode;
+  uint16_t duration; // 渐变时间
+};
 
+// LED状态管理器类（支持参数化渐变时间）
+class LEDState {
+public:
+  LEDState() : currentMode(LED_OFF), targetMode(LED_OFF), 
+               transitionProgress(1.0f), transitionDuration(2000) {}
+  
+  // 设置目标模式并指定渐变时间
+  void setTargetMode(LedMode newMode, uint16_t duration = 2000) {
+    if (newMode == targetMode) return;
+    
+    // 保存当前实际颜色作为渐变起点
+    startColor = currentColor;
+    
+    // 设置目标模式
+    targetMode = newMode;
+    
+    // 设置目标颜色
+    switch(targetMode) {
+      case LED_OFF: targetColor = CRGB::Black; break;
+      case WARM_LIGHT: targetColor = WARM_WHITE; break;
+      case COLD_LIGHT: targetColor = COOL_WHITE; break;
+      case BREATHING: targetColor = WARM_WHITE; break;
+    }
+    
+    // 重置渐变进度
+    transitionProgress = 0.0f;
+    
+    // 设置渐变持续时间
+    transitionDuration = duration;
+    
+    // 记录开始时间
+    transitionStartTime = millis();
+  }
+  
+  void update() {
+    // 如果不需要渐变，直接使用目标颜色
+    if (transitionProgress >= 1.0f) {
+      currentColor = targetColor;
+      currentMode = targetMode;
+      return;
+    }
+    
+    // 计算当前进度 (基于时间)
+    unsigned long elapsed = millis() - transitionStartTime;
+    transitionProgress = min(1.0f, (float)elapsed / (float)transitionDuration);
+    
+    // 使用缓动函数计算插值进度
+    float easedProgress = easeInOutQuad(transitionProgress);
+    
+    // 线性插值计算当前颜色
+    currentColor.r = startColor.r + (targetColor.r - startColor.r) * easedProgress;
+    currentColor.g = startColor.g + (targetColor.g - startColor.g) * easedProgress;
+    currentColor.b = startColor.b + (targetColor.b - startColor.b) * easedProgress;
+  }
+  
+  CRGB getCurrentColor() {
+    return currentColor;
+  }
+  
+  LedMode getCurrentMode() {
+    return currentMode;
+  }
+  
+  // 获取当前渐变进度 (0.0-1.0)
+  float getTransitionProgress() {
+    return transitionProgress;
+  }
+  
+  // 获取剩余渐变时间 (毫秒)
+  uint16_t getRemainingTransitionTime() {
+    if (transitionProgress >= 1.0f) return 0;
+    return transitionDuration - (millis() - transitionStartTime);
+  }
+  
+private:
+  // 缓动函数 (二次缓入缓出)
+  float easeInOutQuad(float t) {
+    return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2;
+  }
+  
+  LedMode currentMode;       // 当前实际模式
+  LedMode targetMode;        // 目标模式
+  CRGB currentColor;         // 当前显示的颜色
+  CRGB startColor;           // 渐变起始颜色
+  CRGB targetColor;          // 目标颜色
+  float transitionProgress;  // 渐变进度 (0.0-1.0)
+  uint16_t transitionDuration; // 渐变持续时间 (毫秒)
+  unsigned long transitionStartTime; // 渐变开始时间
+};
 // 舵机控制任务 - 控制所有舵机
 void servoTask(void *pvParameters) {
   Serial.println("舵机任务启动");
@@ -106,61 +206,58 @@ void servoTask(void *pvParameters) {
     }
   }
 }
-
-// LED控制任务
+// 全局状态管理器
+LEDState ledState;
+// LED任务实现
 void ledTask(void *pvParameters) {
   Serial.println("LED任务启动");
   
-  LedMode currentMode = WARM_LIGHT; // 默认暖光模式
-  
-  // 获取初始堆栈高水位线
+  // 初始堆栈高水位线
   UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
   Serial.printf("LED任务初始堆栈高水位线: %d\n", uxHighWaterMark);
   
   while (1) {
     // 检查是否有新的LED模式命令
-    if (xQueueReceive(ledModeQueue, &currentMode, 0) == pdPASS) {
-      Serial.print("LED模式切换到: ");
-      switch(currentMode) {
-        case LED_OFF: Serial.println("关闭"); break;
-        case WARM_LIGHT: Serial.println("暖光"); break;
-        case COLD_LIGHT: Serial.println("冷光"); break;
+    if (uxQueueMessagesWaiting(ledModeQueue)) {
+      // 定义队列消息结构体
+      struct LedCommand {
+        LedMode mode;
+        uint16_t duration; // 渐变时间
+      };
+      
+      LedCommand command;
+      if (xQueueReceive(ledModeQueue, &command, 0) == pdPASS) {
+        Serial.printf("切换到模式: %d, 渐变时间: %dms\n", command.mode, command.duration);
+        ledState.setTargetMode(command.mode, command.duration);
       }
     }
     
-    // 根据当前模式设置所有LED
-    switch(currentMode) {
-      case LED_OFF:
-        for (int i = 0; i < LED_COUNT; i++) {
-          leds[i] = CRGB::Black;
-        }
-        break;
-        
-      case WARM_LIGHT:
-        for (int i = 0; i < LED_COUNT; i++) {
-          leds[i] = WARM_WHITE;
-        }
-        break;
-        
-      case COLD_LIGHT:
-        for (int i = 0; i < LED_COUNT; i++) {
-          leds[i] = COOL_WHITE;
-        }
-        break;
-    }
+    // 更新状态（处理渐变）
+    ledState.update();
+    
+    // 获取当前颜色并应用到所有LED
+    CRGB color = ledState.getCurrentColor();
+    fill_solid(leds, LED_COUNT, color);
     
     // 更新LED条
     FastLED.show();
     
-    // 控制更新速率 (10FPS)
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // 控制更新速率 (30FPS 获得平滑渐变)
+    vTaskDelay(pdMS_TO_TICKS(33));
     
     // 监控堆栈使用
     static int stackCheckCounter = 0;
-    if (++stackCheckCounter >= 200) {
+    if (++stackCheckCounter >= 200) { // 每6.6秒检查一次
       stackCheckCounter = 0;
       UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
       Serial.printf("LED任务堆栈高水位线: %d\n", uxHighWaterMark);
+      
+      // 调试信息：显示当前渐变状态
+      if (ledState.getTransitionProgress() < 1.0f) {
+        Serial.printf("渐变进度: %.1f%%, 剩余时间: %dms\n", 
+                      ledState.getTransitionProgress() * 100,
+                      ledState.getRemainingTransitionTime());
+      }
     }
   }
 }
@@ -212,7 +309,7 @@ void setup() {
   
   // 创建消息队列 - 使用适当大小
   servoAngleQueue = xQueueCreate(3, sizeof(ServoCommand));
-  ledModeQueue = xQueueCreate(3, sizeof(LedMode));
+  ledModeQueue = xQueueCreate(3, sizeof(LedCommand));
   
   // 检查队列是否创建成功
   if (!servoAngleQueue || !ledModeQueue) {
@@ -290,7 +387,6 @@ void setup() {
 void init_server(){
   const char* ssid = "";
   const char* password = "";
-  
   // 连接WiFi
   WiFi.begin(ssid, password);
   Serial.print("正在连接到WiFi ");
@@ -319,35 +415,31 @@ void init_server(){
 }
 
 void handleLightOff(){
-  LedMode mode = LED_OFF;  // 创建临时变量
-  if (xQueueSend(ledModeQueue, &mode, pdMS_TO_TICKS(100)) != pdPASS) {
-            Serial.println("错误: LED命令队列已满!");
-            
-   } else {
-            Serial.print("设置LED模式为: 关闭");
-            server.send(200, "text/plain; charset=UTF-8", "灯光已关闭");
+  LedCommand command;
+  command.mode = LED_OFF;
+  command.duration = 500; // 0.5秒渐变
+  
+  if (xQueueSend(ledModeQueue, &command, pdMS_TO_TICKS(100)) != pdPASS) {
+    Serial.println("错误: LED命令队列已满!");
   }
 }
 
 void handleLightWarm(){
-  LedMode mode = WARM_LIGHT;  // 创建临时变量
-  if (xQueueSend(ledModeQueue, &mode, pdMS_TO_TICKS(100)) != pdPASS) {
-            Serial.println("错误: LED命令队列已满!");
-            
-   } else {
-            Serial.print("设置LED模式为: ");
-            server.send(200, "text/plain; charset=UTF-8", "开启暖光");
-            
+  LedCommand command;
+  command.mode = WARM_LIGHT;
+  command.duration = 3000; // 3秒渐变
+  
+  if (xQueueSend(ledModeQueue, &command, pdMS_TO_TICKS(100)) != pdPASS) {
+    Serial.println("错误: LED命令队列已满!");
   }
 }
 void handleLightCold(){
-  LedMode mode = COLD_LIGHT;  // 创建临时变量
-  if (xQueueSend(ledModeQueue, &mode, pdMS_TO_TICKS(100)) != pdPASS) {
-            Serial.println("错误: LED命令队列已满!");
-            
-   } else {
-            Serial.print("设置LED模式为: ");
-            server.send(200, "text/plain; charset=UTF-8", "开启冷光");
+  LedCommand command;
+  command.mode = COLD_LIGHT;
+  command.duration = 0; // 使用默认时间
+  
+  if (xQueueSend(ledModeQueue, &command, pdMS_TO_TICKS(100)) != pdPASS) {
+    Serial.println("错误: LED命令队列已满!");
   }
 }
 
@@ -481,3 +573,4 @@ void loop() {
   // 主循环延迟
   delay(100);
 }
+
