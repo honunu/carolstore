@@ -5,6 +5,8 @@
 #include <freertos/queue.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include "LEDState.h" // 包含分离的头文件
+
 
 // 硬件配置
 #define ROOF_SERVO_PIN 7      // 舵机1信号线
@@ -31,9 +33,6 @@ WebServer server(80);
 // 舵机对象数组
 Servo servos[3];
 CRGB leds[LED_COUNT];
-// LED颜色定义
-const CRGB WARM_WHITE = CRGB(255, 180, 130);
-const CRGB COOL_WHITE = CRGB(220, 255, 255);
 
 // 任务句柄
 TaskHandle_t servoTaskHandle = NULL;
@@ -43,19 +42,6 @@ TaskHandle_t ledTaskHandle = NULL;
 QueueHandle_t servoAngleQueue;
 QueueHandle_t ledModeQueue;
 
-// LED模式枚举
-// enum LedMode {
-//   LED_OFF,
-//   WARM_LIGHT,
-//   COLD_LIGHT
-// };
-
-typedef enum {
-  LED_OFF,
-  WARM_LIGHT,
-  COLD_LIGHT,
-  BREATHING   // 新增呼吸模式
-} LedMode;
 
 // 舵机数据结构
 struct ServoCommand {
@@ -66,96 +52,8 @@ struct LedCommand {
   LedMode mode;
   uint16_t duration; // 渐变时间
 };
-
-// LED状态管理器类（支持参数化渐变时间）
-class LEDState {
-public:
-  LEDState() : currentMode(LED_OFF), targetMode(LED_OFF), 
-               transitionProgress(1.0f), transitionDuration(2000) {}
-  
-  // 设置目标模式并指定渐变时间
-  void setTargetMode(LedMode newMode, uint16_t duration = 2000) {
-    if (newMode == targetMode) return;
-    
-    // 保存当前实际颜色作为渐变起点
-    startColor = currentColor;
-    
-    // 设置目标模式
-    targetMode = newMode;
-    
-    // 设置目标颜色
-    switch(targetMode) {
-      case LED_OFF: targetColor = CRGB::Black; break;
-      case WARM_LIGHT: targetColor = WARM_WHITE; break;
-      case COLD_LIGHT: targetColor = COOL_WHITE; break;
-      case BREATHING: targetColor = WARM_WHITE; break;
-    }
-    
-    // 重置渐变进度
-    transitionProgress = 0.0f;
-    
-    // 设置渐变持续时间
-    transitionDuration = duration;
-    
-    // 记录开始时间
-    transitionStartTime = millis();
-  }
-  
-  void update() {
-    // 如果不需要渐变，直接使用目标颜色
-    if (transitionProgress >= 1.0f) {
-      currentColor = targetColor;
-      currentMode = targetMode;
-      return;
-    }
-    
-    // 计算当前进度 (基于时间)
-    unsigned long elapsed = millis() - transitionStartTime;
-    transitionProgress = min(1.0f, (float)elapsed / (float)transitionDuration);
-    
-    // 使用缓动函数计算插值进度
-    float easedProgress = easeInOutQuad(transitionProgress);
-    
-    // 线性插值计算当前颜色
-    currentColor.r = startColor.r + (targetColor.r - startColor.r) * easedProgress;
-    currentColor.g = startColor.g + (targetColor.g - startColor.g) * easedProgress;
-    currentColor.b = startColor.b + (targetColor.b - startColor.b) * easedProgress;
-  }
-  
-  CRGB getCurrentColor() {
-    return currentColor;
-  }
-  
-  LedMode getCurrentMode() {
-    return currentMode;
-  }
-  
-  // 获取当前渐变进度 (0.0-1.0)
-  float getTransitionProgress() {
-    return transitionProgress;
-  }
-  
-  // 获取剩余渐变时间 (毫秒)
-  uint16_t getRemainingTransitionTime() {
-    if (transitionProgress >= 1.0f) return 0;
-    return transitionDuration - (millis() - transitionStartTime);
-  }
-  
-private:
-  // 缓动函数 (二次缓入缓出)
-  float easeInOutQuad(float t) {
-    return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2;
-  }
-  
-  LedMode currentMode;       // 当前实际模式
-  LedMode targetMode;        // 目标模式
-  CRGB currentColor;         // 当前显示的颜色
-  CRGB startColor;           // 渐变起始颜色
-  CRGB targetColor;          // 目标颜色
-  float transitionProgress;  // 渐变进度 (0.0-1.0)
-  uint16_t transitionDuration; // 渐变持续时间 (毫秒)
-  unsigned long transitionStartTime; // 渐变开始时间
-};
+// 全局状态管理器
+LEDState ledState;
 // 舵机控制任务 - 控制所有舵机
 void servoTask(void *pvParameters) {
   Serial.println("舵机任务启动");
@@ -206,8 +104,7 @@ void servoTask(void *pvParameters) {
     }
   }
 }
-// 全局状态管理器
-LEDState ledState;
+
 // LED任务实现
 void ledTask(void *pvParameters) {
   Serial.println("LED任务启动");
@@ -436,7 +333,7 @@ void handleLightWarm(){
 void handleLightCold(){
   LedCommand command;
   command.mode = COLD_LIGHT;
-  command.duration = 0; // 使用默认时间
+  command.duration = 2000; // 使用默认时间
   
   if (xQueueSend(ledModeQueue, &command, pdMS_TO_TICKS(100)) != pdPASS) {
     Serial.println("错误: LED命令队列已满!");
