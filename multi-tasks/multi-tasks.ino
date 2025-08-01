@@ -282,6 +282,7 @@ void setup() {
 }
 
 void init_server(){
+
   const char* ssid = "";
   const char* password = "";
   // 连接WiFi
@@ -305,6 +306,10 @@ void init_server(){
   server.on("/light/cold", handleLightCold);
   server.on("/roof/open", handleRoofOpen);
   server.on("/roof/close", handleRoofClose);
+  server.on("/door/left/open", handleLeftDoorOpen);
+  server.on("/door/left/close", handleLeftDoorClose);
+  server.on("/door/right/open", handleRightDoorOpen);
+  server.on("/door/right/close", handleRightDoorClose);
   // server.onNotFound(handleNotFound);
   
   server.begin();
@@ -368,6 +373,56 @@ void handleRoofClose() {
 
 void handleRoot(){
 
+}
+
+void handleLeftDoorOpen(){
+  ServoCommand cmd;
+  cmd.servo_id = 1;
+  cmd.angle = 80;
+
+  if (xQueueSend(servoAngleQueue, &cmd, pdMS_TO_TICKS(100)) != pdPASS) {
+          Serial.println("错误: 舵机命令队列已满!");
+    } else {
+      Serial.printf("左侧门打开");
+      server.send(200, "text/plain; charset=UTF-8", "左侧门打开");
+    }
+}
+void handleRightDoorOpen(){
+  ServoCommand cmd;
+  cmd.servo_id = 2;
+  cmd.angle = 70;
+
+  if (xQueueSend(servoAngleQueue, &cmd, pdMS_TO_TICKS(100)) != pdPASS) {
+          Serial.println("错误: 舵机命令队列已满!");
+    } else {
+      Serial.printf("右侧门打开");
+      server.send(200, "text/plain; charset=UTF-8", "右侧门打开");
+    }
+}
+void handleLeftDoorClose() {
+  ServoCommand cmd;
+  cmd.servo_id = 1;
+  cmd.angle = 30;
+
+  if (xQueueSend(servoAngleQueue, &cmd, pdMS_TO_TICKS(100)) != pdPASS) {
+          Serial.println("错误: 舵机命令队列已满!");
+    } else {
+      Serial.printf("左侧门关闭");
+      server.send(200, "text/plain; charset=UTF-8", "左侧门关闭");
+    }
+}
+
+void handleRightDoorClose() {
+  ServoCommand cmd;
+  cmd.servo_id = 2;
+  cmd.angle = 120;
+  
+  if (xQueueSend(servoAngleQueue, &cmd, pdMS_TO_TICKS(100)) != pdPASS){
+              Serial.println("错误: 舵机命令队列已满!");
+    } else {
+      Serial.printf("右侧门关闭");
+      server.send(200, "text/plain; charset=UTF-8", "右侧门关闭");
+    }
 }
 void loop() {
   server.handleClient();
