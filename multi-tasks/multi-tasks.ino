@@ -3,6 +3,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
+#include <WiFi.h>
+#include <WebServer.h>
 
 // 硬件配置
 #define ROOF_SERVO_PIN 7      // 舵机1信号线
@@ -25,7 +27,7 @@
 
 // LED参数
 #define LED_BRIGHTNESS 200
-
+WebServer server(80);
 // 舵机对象数组
 Servo servos[3];
 CRGB leds[LED_COUNT];
@@ -155,7 +157,7 @@ void ledTask(void *pvParameters) {
     
     // 监控堆栈使用
     static int stackCheckCounter = 0;
-    if (++stackCheckCounter >= 50) {
+    if (++stackCheckCounter >= 200) {
       stackCheckCounter = 0;
       UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
       Serial.printf("LED任务堆栈高水位线: %d\n", uxHighWaterMark);
@@ -281,9 +283,105 @@ void setup() {
   // 禁用看门狗 (ESP32-S2特定)
   disableCore0WDT();
   Serial.println("已禁用核心0看门狗");
+
+  init_server();
 }
 
+void init_server(){
+  const char* ssid = "";
+  const char* password = "";
+  
+  // 连接WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("正在连接到WiFi ");
+  Serial.println(ssid);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("\nWiFi已连接!");
+  Serial.print("IP地址: ");
+  Serial.println(WiFi.localIP());
+  
+  // 设置Web服务器路由
+  server.on("/", handleRoot);
+  server.on("/light/off", handleLightOff);
+  server.on("/light/warm", handleLightWarm);
+  server.on("/light/cold", handleLightCold);
+  server.on("/roof/open", handleRoofOpen);
+  server.on("/roof/close", handleRoofClose);
+  // server.onNotFound(handleNotFound);
+  
+  server.begin();
+  Serial.println("服务器已启动");
+}
+
+void handleLightOff(){
+  LedMode mode = LED_OFF;  // 创建临时变量
+  if (xQueueSend(ledModeQueue, &mode, pdMS_TO_TICKS(100)) != pdPASS) {
+            Serial.println("错误: LED命令队列已满!");
+            
+   } else {
+            Serial.print("设置LED模式为: 关闭");
+            server.send(200, "text/plain; charset=UTF-8", "灯光已关闭");
+  }
+}
+
+void handleLightWarm(){
+  LedMode mode = WARM_LIGHT;  // 创建临时变量
+  if (xQueueSend(ledModeQueue, &mode, pdMS_TO_TICKS(100)) != pdPASS) {
+            Serial.println("错误: LED命令队列已满!");
+            
+   } else {
+            Serial.print("设置LED模式为: ");
+            server.send(200, "text/plain; charset=UTF-8", "开启暖光");
+            
+  }
+}
+void handleLightCold(){
+  LedMode mode = COLD_LIGHT;  // 创建临时变量
+  if (xQueueSend(ledModeQueue, &mode, pdMS_TO_TICKS(100)) != pdPASS) {
+            Serial.println("错误: LED命令队列已满!");
+            
+   } else {
+            Serial.print("设置LED模式为: ");
+            server.send(200, "text/plain; charset=UTF-8", "开启冷光");
+  }
+}
+
+void handleRoofOpen() {
+  ServoCommand cmd;
+  cmd.servo_id = 0;
+  cmd.angle = 90;
+
+  if (xQueueSend(servoAngleQueue, &cmd, pdMS_TO_TICKS(100)) != pdPASS) {
+          Serial.println("错误: 舵机命令队列已满!");
+    } else {
+      Serial.printf("房顶打开");
+      server.send(200, "text/plain; charset=UTF-8", "房顶打开");
+    }
+}
+
+void handleRoofClose() {
+  ServoCommand cmd;
+  cmd.servo_id = 0;
+  cmd.angle = 160;
+
+  if (xQueueSend(servoAngleQueue, &cmd, pdMS_TO_TICKS(100)) != pdPASS) {
+          Serial.println("错误: 舵机命令队列已满!");
+    } else {
+      Serial.printf("房顶关闭");
+      server.send(200, "text/plain; charset=UTF-8", "房顶关闭");
+    }
+}
+
+void handleRoot(){
+
+}
 void loop() {
+  server.handleClient();
   // 主循环处理串口命令
   if (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
