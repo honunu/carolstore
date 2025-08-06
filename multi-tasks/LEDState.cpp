@@ -4,6 +4,8 @@
 const CRGB WARM_WHITE = CRGB(255, 180, 107); // 暖白色 (偏黄)
 const CRGB COOL_WHITE = CRGB(200, 200, 255); // 冷白色 (偏蓝)
 const CRGB BREATH_COLOR = WARM_WHITE; // 呼吸模式使用暖白色
+const CRGB ALARM_RED = CRGB(255, 0, 0); // 报警红色
+const CRGB WARM_YELLOW = CRGB(255, 200, 0); // 暖黄色
 
 LEDState::LEDState() : 
   currentMode(LED_OFF), 
@@ -35,6 +37,8 @@ void LEDState::setTargetMode(LedMode newMode, uint16_t duration) {
     case WARM_LIGHT: targetColor = WARM_WHITE; break;
     case COLD_LIGHT: targetColor = COOL_WHITE; break;
     case BREATHING: targetColor = BREATH_COLOR; break;
+    case ALARM_RED_LIGHT: targetColor = ALARM_RED; break;
+    case WARM_YELLOW_LIGHT: targetColor = WARM_YELLOW; break;
   }
   
   // 重置渐变进度

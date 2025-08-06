@@ -8,13 +8,17 @@ enum LedMode {
   LED_OFF,
   WARM_LIGHT,
   COLD_LIGHT,
-  BREATHING
+  BREATHING,
+  ALARM_RED_LIGHT,
+  WARM_YELLOW_LIGHT
 };
 
 // 全局颜色常量声明
 extern const CRGB WARM_WHITE;
 extern const CRGB COOL_WHITE;
 extern const CRGB BREATH_COLOR;
+extern const CRGB ALARM_RED;
+extern const CRGB WARM_YELLOW;
 
 class LEDState {
 public:

@@ -304,12 +304,16 @@ void init_server(){
   server.on("/light/off", handleLightOff);
   server.on("/light/warm", handleLightWarm);
   server.on("/light/cold", handleLightCold);
+server.on("/light/yellow", handleLightYellow);
+  server.on("/light/alarm", handleLightAlarm);
   server.on("/roof/open", handleRoofOpen);
   server.on("/roof/close", handleRoofClose);
   server.on("/door/left/open", handleLeftDoorOpen);
   server.on("/door/left/close", handleLeftDoorClose);
   server.on("/door/right/open", handleRightDoorOpen);
   server.on("/door/right/close", handleRightDoorClose);
+  
+  
   // server.onNotFound(handleNotFound);
   
   server.begin();
@@ -344,6 +348,38 @@ void handleLightCold(){
     Serial.println("错误: LED命令队列已满!");
   }
 }
+void handleLightYellow(){
+  LedCommand command;
+  command.mode = WARM_YELLOW_LIGHT;
+  command.duration = 2000; // 3秒渐变
+  
+  if (xQueueSend(ledModeQueue, &command, pdMS_TO_TICKS(100)) != pdPASS) {
+    Serial.println("错误: LED命令队列已满!");
+  }
+}
+
+
+void handleLightAlarm(){
+  LedCommand command;
+  command.mode = ALARM_RED_LIGHT;
+  command.duration = 1000; // 3秒渐变
+  
+  if (xQueueSend(ledModeQueue, &command, pdMS_TO_TICKS(100)) != pdPASS) {
+    Serial.println("错误: LED命令队列已满!");
+  }
+
+  command.mode = LED_OFF;
+  if (xQueueSend(ledModeQueue, &command, pdMS_TO_TICKS(100)) != pdPASS) {
+    Serial.println("错误: LED命令队列已满!");
+  }
+
+  command.mode = ALARM_RED_LIGHT;
+  if (xQueueSend(ledModeQueue, &command, pdMS_TO_TICKS(100)) != pdPASS) {
+    Serial.println("错误: LED命令队列已满!");
+  }
+
+}
+
 
 void handleRoofOpen() {
   ServoCommand cmd;
@@ -370,6 +406,8 @@ void handleRoofClose() {
       server.send(200, "text/plain; charset=UTF-8", "房顶关闭");
     }
 }
+
+
 
 void handleRoot(){
 
