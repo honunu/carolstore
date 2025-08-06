@@ -18,7 +18,7 @@
 // 舵机参数
 #define SERVO_MIN_ANGLE 0
 #define SERVO_MAX_ANGLE 270
-#define SERVO_INITIAL_ANGLE 120
+#define SERVO_INITIAL_ANGLE 160
 #define SERVO_MOVE_SPEED 50  // 毫秒/度
 
 // 舵机参数
@@ -41,7 +41,7 @@ TaskHandle_t ledTaskHandle = NULL;
 // 消息队列
 QueueHandle_t servoAngleQueue;
 QueueHandle_t ledModeQueue;
-
+QueueHandle_t touchEventQueue = NULL;
 
 // 舵机数据结构
 struct ServoCommand {
@@ -54,6 +54,151 @@ struct LedCommand {
 };
 // 全局状态管理器
 LEDState ledState;
+
+// 硬件配置
+const uint8_t TOUCH_PIN = 1;  // GPIO4连接TTP223输出
+#define TOUCH_ACTIVE HIGH     // 根据模块设置：触摸时高电平或低电平
+
+// 事件定义
+enum TouchEvent { NONE, SINGLE_TAP, DOUBLE_TAP };
+
+// 状态机状态
+enum TouchState { 
+  IDLE, 
+  FIRST_PRESS_DETECTED, 
+  WAITING_RELEASE, 
+  WAITING_SECOND_TAP 
+};
+
+enum RoofState {
+  ROOF_CLOSED,
+  ROOF_OPENED,
+  ROOF_OPENING,
+  ROOF_CLOSING,
+  ROOF_IDLE
+};
+
+// 全局变量
+volatile RoofState roofState = ROOF_IDLE;
+
+// 时间参数 (单位: 毫秒)
+const uint32_t DEBOUNCE_DELAY = 20;    // TTP223需要更短的消抖时间
+const uint32_t DOUBLE_TAP_INTERVAL = 350; // 双击间隔
+const uint32_t PRESS_TIMEOUT = 1000;     // 长按超时
+
+// 全局变量
+volatile TouchState touchState = IDLE;
+volatile uint32_t lastTouchEventTime = 0;
+
+
+// 触摸检测任务
+void touchDetectionTask(void *pvParameters) {
+  pinMode(TOUCH_PIN, INPUT);
+  
+  while (1) {
+    const uint32_t currentTime = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    bool isTouched = (digitalRead(TOUCH_PIN) == TOUCH_ACTIVE);
+
+    switch (touchState) {
+      case IDLE:
+        if (isTouched) {
+          touchState = FIRST_PRESS_DETECTED;
+          lastTouchEventTime = currentTime;
+        }
+        break;
+
+      case FIRST_PRESS_DETECTED:
+        // 消抖处理
+        if (currentTime - lastTouchEventTime > DEBOUNCE_DELAY) {
+          if (isTouched) {
+            touchState = WAITING_RELEASE;
+          } else {
+            touchState = IDLE; // 误触检测
+          }
+        }
+        break;
+
+      case WAITING_RELEASE:
+        if (!isTouched) {
+          touchState = WAITING_SECOND_TAP;
+          lastTouchEventTime = currentTime;
+        } 
+        // 长按超时处理
+        else if (currentTime - lastTouchEventTime > PRESS_TIMEOUT) {
+          TouchEvent event = SINGLE_TAP;
+          xQueueSend(touchEventQueue, &event, 0);
+          touchState = IDLE;
+        }
+        break;
+
+      case WAITING_SECOND_TAP:
+        if (isTouched && (currentTime - lastTouchEventTime > DEBOUNCE_DELAY)) {
+          TouchEvent event = DOUBLE_TAP;
+          xQueueSend(touchEventQueue, &event, 0);
+          touchState = IDLE;
+        } 
+        // 双击超时处理
+        else if (currentTime - lastTouchEventTime > DOUBLE_TAP_INTERVAL) {
+          TouchEvent event = SINGLE_TAP;
+          xQueueSend(touchEventQueue, &event, 0);
+          touchState = IDLE;
+        }
+        break;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(5)); // 更快的检测周期
+  }
+}
+
+// 事件处理任务
+void eventHandlerTask(void *pvParameters) {
+  TouchEvent event;
+  while (1) {
+    if (xQueueReceive(touchEventQueue, &event, portMAX_DELAY)) {
+      switch (event) {
+        case SINGLE_TAP:
+
+        // 处理单击事件 - 切换屋顶状态
+          Serial.println("单击事件触发 - 切换屋顶舵机");
+          
+          ServoCommand cmd;
+          cmd.servo_id = 0; // 屋顶舵机ID
+
+          if (roofState == ROOF_CLOSED) {
+            cmd.angle = 90; // 关闭的情况按键打开
+          } else if (roofState == ROOF_IDLE) {
+            cmd.angle = 90; // 静止的情况按键打开
+          } else if (roofState == ROOF_OPENING) {
+            cmd.angle = 160; // 正在打开按键关闭
+            Serial.println("正在打开 现在关闭");
+          }else if (roofState == ROOF_CLOSING) {
+            cmd.angle = 90; // 正在打开按键关闭
+          }else if (roofState == ROOF_OPENED) {
+            cmd.angle = 160; // 已经打开了按键关闭
+          } else {
+            cmd.angle = 160;
+            Serial.println("状态未知 现在关闭");
+          }
+
+
+          
+          if (xQueueSend(servoAngleQueue, &cmd, pdMS_TO_TICKS(100))) {
+            Serial.printf("发送屋顶切换命令: %d度\n", cmd.angle);
+          } else {
+            Serial.println("错误: 舵机命令队列已满!");
+          }
+          // 处理单击事件
+          break;
+          
+        case DOUBLE_TAP:
+          // 处理双击事件
+          Serial.println("双击事件触发");
+          break;
+      }
+    }
+  }
+}
+
 // 舵机控制任务 - 控制所有舵机
 void servoTask(void *pvParameters) {
   Serial.println("舵机任务启动");
@@ -83,14 +228,38 @@ void servoTask(void *pvParameters) {
     // 更新所有舵机位置
     for (int i = 0; i < 3; i++) {
       if (currentAngles[i] != targetAngles[i]) {
+       if (i == 0) { // 屋顶舵机
+          if (currentAngles[i] < targetAngles[i]) {
+            roofState = ROOF_CLOSING;
+          } else {
+            roofState = ROOF_OPENING;
+          }
+        } 
+        
+        
+         
+        // 其他舵机正常更新
         if (currentAngles[i] < targetAngles[i]) {
           currentAngles[i]++;
         } else {
           currentAngles[i]--;
         }
+        
+      }
+
         servos[i].write(currentAngles[i]);
+
+      // 检查是否到达目标位置
+      if (i == 0 && currentAngles[i] == targetAngles[i]) {
+        if (targetAngles[i] == 90) {
+          roofState = ROOF_OPENED;
+        } else if (targetAngles[i] == 160) {
+          roofState = ROOF_CLOSED;
+        }
       }
     }
+    
+    
     
     // 非阻塞延迟
     vTaskDelay(pdMS_TO_TICKS(SERVO_MOVE_SPEED));
@@ -207,6 +376,7 @@ void setup() {
   // 创建消息队列 - 使用适当大小
   servoAngleQueue = xQueueCreate(3, sizeof(ServoCommand));
   ledModeQueue = xQueueCreate(3, sizeof(LedCommand));
+  touchEventQueue = xQueueCreate(10, sizeof(TouchEvent));
   
   // 检查队列是否创建成功
   if (!servoAngleQueue || !ledModeQueue) {
@@ -264,6 +434,26 @@ void setup() {
   if (xQueueSend(ledModeQueue, &initialMode, pdMS_TO_TICKS(100)) != pdPASS) {
     Serial.println("错误: 无法设置初始LED模式");
   }
+  
+  // 创建触摸检测任务
+  xTaskCreate(
+    touchDetectionTask,
+    "TouchDetect",
+    2048,
+    NULL,
+    3,  // 较高优先级
+    NULL
+  );
+
+  // 创建事件处理任务
+  xTaskCreate(
+    eventHandlerTask,
+    "EventHandler",
+    2048,
+    NULL,
+    1,  // 较低优先级
+    NULL
+  );
   
   Serial.println("系统初始化完成");
   Serial.println("可用命令: ");
