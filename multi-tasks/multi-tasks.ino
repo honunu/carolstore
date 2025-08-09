@@ -90,6 +90,8 @@ const uint32_t PRESS_TIMEOUT = 1000;     // 长按超时
 volatile TouchState touchState = IDLE;
 volatile uint32_t lastTouchEventTime = 0;
 
+volatile bool servoPowerUp[3] = {true, true, true};
+
 
 // 触摸检测任务
 void touchDetectionTask(void *pvParameters) {
@@ -151,7 +153,7 @@ void touchDetectionTask(void *pvParameters) {
 }
 
 // 事件处理任务
-void eventHandlerTask(void *pvParameters) {
+void touchEventHandlerTask(void *pvParameters) {
   TouchEvent event;
   while (1) {
     if (xQueueReceive(touchEventQueue, &event, portMAX_DELAY)) {
@@ -199,6 +201,7 @@ void eventHandlerTask(void *pvParameters) {
   }
 }
 
+
 // 舵机控制任务 - 控制所有舵机
 void servoTask(void *pvParameters) {
   Serial.println("舵机任务启动");
@@ -237,17 +240,38 @@ void servoTask(void *pvParameters) {
         } 
         
         
-         
         // 其他舵机正常更新
         if (currentAngles[i] < targetAngles[i]) {
           currentAngles[i]++;
         } else {
           currentAngles[i]--;
         }
-        
-      }
+
+        if(servoPowerUp[0]==false){
+          if (servos[0].attach(ROOF_SERVO_PIN, 500, 2500) == -1) {
+            Serial.printf("舵机%d附加失败! 系统挂起\n", i+1);
+            while(1) delay(1000);
+          }else{
+            servoPowerUp[0]=true;
+          }
+          Serial.println("重新挂载roof电机");
+        }
 
         servos[i].write(currentAngles[i]);
+        
+      }else{
+        if (i!=0){
+          continue;
+        }
+
+        if(servoPowerUp[0]==true){
+            Serial.println("roof到达位置 停止供电");
+            servos[0].detach();
+            servoPowerUp[0]=false;
+        }
+      }
+
+      
 
       // 检查是否到达目标位置
       if (i == 0 && currentAngles[i] == targetAngles[i]) {
@@ -258,7 +282,7 @@ void servoTask(void *pvParameters) {
         }
       }
     }
-    
+
     
     
     // 非阻塞延迟
@@ -266,7 +290,7 @@ void servoTask(void *pvParameters) {
     
     // 监控堆栈使用
     static int stackCheckCounter = 0;
-    if (++stackCheckCounter >= 100) {
+    if (++stackCheckCounter >= 2000) {
       stackCheckCounter = 0;
       UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
       Serial.printf("舵机任务堆栈高水位线: %d\n", uxHighWaterMark);
@@ -348,7 +372,7 @@ void print_reset_reason() {
 void setup() {
   // 初始化串口通信
   Serial.begin(115200);
-  delay(1000); // 等待串口稳定
+  delay(100); // 等待串口稳定
   Serial.println("\n\n多舵机控制系统启动中...");
   
   // 打印重启原因
@@ -369,8 +393,8 @@ void setup() {
       Serial.printf("舵机%d附加失败! 系统挂起\n", i+1);
       while(1) delay(1000);
     }
-    servos[i].write(SERVO_INITIAL_ANGLE);
-    Serial.printf("舵机%d初始位置: %d度\n", i+1, SERVO_INITIAL_ANGLE);
+    // servos[i].write(SERVO_INITIAL_ANGLE);
+    // Serial.printf("舵机%d初始位置: %d度\n", i+1, SERVO_INITIAL_ANGLE);
   }
   
   // 创建消息队列 - 使用适当大小
@@ -434,7 +458,7 @@ void setup() {
   if (xQueueSend(ledModeQueue, &initialMode, pdMS_TO_TICKS(100)) != pdPASS) {
     Serial.println("错误: 无法设置初始LED模式");
   }
-  
+
   // 创建触摸检测任务
   xTaskCreate(
     touchDetectionTask,
@@ -447,8 +471,8 @@ void setup() {
 
   // 创建事件处理任务
   xTaskCreate(
-    eventHandlerTask,
-    "EventHandler",
+    touchEventHandlerTask,
+    "TouchEventHandler",
     2048,
     NULL,
     1,  // 较低优先级
@@ -480,6 +504,7 @@ void init_server(){
   Serial.print("正在连接到WiFi ");
   Serial.println(ssid);
   
+  //TODO 修改成失败在task中重试
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
@@ -489,12 +514,13 @@ void init_server(){
   Serial.print("IP地址: ");
   Serial.println(WiFi.localIP());
   
+  
   // 设置Web服务器路由
   server.on("/", handleRoot);
   server.on("/light/off", handleLightOff);
   server.on("/light/warm", handleLightWarm);
   server.on("/light/cold", handleLightCold);
-server.on("/light/yellow", handleLightYellow);
+  server.on("/light/yellow", handleLightYellow);
   server.on("/light/alarm", handleLightAlarm);
   server.on("/roof/open", handleRoofOpen);
   server.on("/roof/close", handleRoofClose);
